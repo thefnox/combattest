@@ -1,0 +1,7 @@
+"combattest"
+{
+	"base"		"base"
+	"title"		"Combat Test"
+	"maps"		"^rp_"
+	"menusystem"	"1"
+}
