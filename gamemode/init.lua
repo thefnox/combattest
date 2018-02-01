@@ -4,6 +4,8 @@ AddCSLuaFile( "cl_init.lua" )
 AddCSLuaFile( "shared.lua" )
 AddCSLuaFile( "player.lua" )
 
+resource.AddFile("materials/playerlocked.png")
+
 include( "player.lua" )
 include( "shared.lua" )
 
@@ -16,14 +18,12 @@ util.AddNetworkString( "SetAttacking" )
 util.AddNetworkString( "SetDefending" )
 util.AddNetworkString( "SetPlayerCanEndCombat" )
 util.AddNetworkString( "SetPlayerDefeated" )
+util.AddNetworkString( "SetTurnQueue" )
 
 GM.__ChatCommands = {
 	["/me"] = function(ply, msg)
 		gamemode.Call("PlayerEmote", ply, msg)
 		return "**" .. ply:GetName() .. " " .. msg
-	end,
-	["/fuckme"] = function(ply, msg)
-		return "No, fuck you!"
 	end,
 	["/lockme"] = function(ply)
 		ply:SetLockPos(ply:GetPos())
@@ -135,37 +135,10 @@ function GM:PlayerEmote(ply, emote)
 	print(ply:GetName() .. " emoted.")
 
 	if (ply:IsInCombat() and #emote >= __CombatRules.EmoteLimit) then
-		for _, pl in pairs(player.GetAll()) do
-			if pl:IsAttacking(ply) then
-				table.RemoveByValue(pl.__MustReply, ply)
-			end 
-		end
-		if (ply:IsDefending()) then
-			ply:SetAllowedToFire(!ply:IsAttacking())
-			ply:SetMoveLocked(ply:IsAttacking())
-		end
-		if (ply:IsAttacking()) then
-			if (ply.__MustReply and #ply.__MustReply == 0) then
-				ply:SetLockPos(ply:GetPos())
-				ply:SetMoveLocked(false)
-				ply:SetAllowedToFire(true)
-				if (!ply:IsDefending()) then
-					if (ply:CanEndCombat()) then
-						ply:ClearCombat()
-						ply:SetCanEndCombat(false);
-					else
-						ply:SetCanEndCombat(true);
-						for _, target in pairs(ply.__Attacking) do
-							if (!target:IsAttacking()) then
-								ply:SetAttackAgain(target)
-							end
-						end
-					end
-				end
-			end
-		end
+		//If it was the player's turn, then process the turn queue
+		gamemode.Call("ProcessTurnQueue", ply)
 	elseif (ply:IsInCombat()) then
-		ply:ChatPrint("The emote wasn't long enough according to combat rules, try again.")
+		ply:ChatPrint("[COMBAT] The emote wasn't long enough according to combat rules, try again.")
 	end
 end
 
@@ -175,33 +148,97 @@ function GM:PlayerDisconnected(ply)
 	end
 end
 
+function GM:ProcessTurnQueue(ply)
+	local queue = ply:GetTurnQueue()
+	if (ply:PopTurnQueue() == ply) then
+		//Turn ended for player, process the queue
+		if (ply.__SkippedTurn) then
+			//If the player has skipped twice, remove them from combat
+			ply:ChatPrint("[COMBAT] You have skipped your turn twice, so you're now set as a non-combatant.")
+			for _, pl in pairs(player.GetAll()) do
+				if (pl:IsAttacking(ply)) then
+					pl:ChatPrint("[COMBAT] " .. ply:GetName() .. " has skipped their turn twice, so they're now set as a non-combatant")
+				end
+			end
+			ply:ClearCombat()
+		else
+			if (!ply:IsAttacking()) then
+				//If the player didn't attack when they could, it means they skipped their turn
+				ply.__SkippedTurn = true
+				ply:ChatPrint("[COMBAT] You have skipped your turn to attack.")
+			end
+			//Lock the player, and forbid them from firing
+			ply:ClearLockPos()
+			ply:SetMoveLocked(true)
+			ply:SetAllowedToFire(false)
+			//Remove the player from the beginning of the queue, add them back at the end
+			ply:PushTurnQueue(ply)
+		end
+		//If the queue is still not empty, allow the next person in the queue to attack and move
+		local next = queue[1]
+		if (next) then
+			//If there's only one person left in the queue, have them exit combat
+			if (#queue == 1) then
+				next:ClearCombat()
+			else
+				gamemode.Call("BeginTurn", next)
+			end
+		end
+	end
+end
+
+function GM:BeginTurn(ply)
+	ply:SetMoveLocked(false)
+	ply:SetAllowedToFire(true)
+	ply:ClearAttack()
+	if (!ply:IsPosLocked()) then
+		//Player wasn't hit, lock them to their last position
+		ply:SetLockPos(ply:GetPos())
+	end
+end
+
 function GM:OnPlayerAttack(ply, target)
 	print(ply:GetName() .. " has attacked " .. target:GetName())
 	ply:SetHealth(math.min(ply:GetMaxHealth(), ply:Health() + 5))
-	ply:SetCanEndCombat(false);
+	//If you attacked it means you didn't skip your turn
+	ply.__SkippedTurn = false
+	//You're locked in the position where you fired from
 	ply:SetMoveLocked(true)
-	ply:ClearAttackAgain(target)
-	ply.__MustReply = ply.__MustReply or {}
-	table.RemoveByValue(ply.__MustReply, target)
-	table.insert(ply.__MustReply, target)
+
+	if (!ply:IsInTurnQueue(target)) then
+		//The target is not in the queue already
+		if (#target:GetTurnQueue() > 0) then
+			//The target is already in a queue, merge that queue with ours
+			ply:PushTurnQueue(target:GetTurnQueue())
+		else
+			//The target is not in a queue, add it to ours, and set their queue to ours
+			ply:PushTurnQueue(target)
+			target:SetTurnQueue(ply:GetTurnQueue())
+		end
+		//Push the attacker to the end of the queue
+		ply:PushTurnQueue(ply)
+	end
+	
 	if !timer.Exists(ply:SteamID() .. "AttackTimer") then
+		//This is to control spraying and automatic weapons, you can only attack the people you can hit within a specified time (1 second, for example)
 		timer.Create( ply:SteamID() .. "AttackTimer", __CombatRules.ShootTime, 1, function()
 			ply:SetAllowedToFire(false)
 		end)
 	end
 	if (!ply:IsInCombat()) then
-		ply:ChatPrint("You've attacked " .. target:GetName() .. ", you will be allowed to attack again after they emote.")
+		ply:ChatPrint("[COMBAT] You've attacked " .. target:GetName() .. ", you will be allowed to attack again after they emote.")
 	end
 	ply:SetAttack(target)
 end
 
 function GM:OnPlayerDefend(ply, attacker)
 	print(ply:GetName() .. " is being attacked by" .. attacker:GetName())
-	ply:SetLockPos(ply:GetPos())
-	ply:SetMoveLocked(ply:IsAttacking() and (ply.__MustReply and #ply.__MustReply > 0))
-	ply:SetAllowedToFire(false)
+	if (ply:PopTurnQueue() == ply) then
+		//If you're also the first in the queue after being attacked, it's your turn
+		gamemode.Call("BeginTurn", ply)
+	end
 	if (!ply:IsInCombat()) then
-		ply:ChatPrint("You've been attacked by " .. attacker:GetName() .. ", you will be allowed to attack again after emoting.")
+		ply:ChatPrint("[COMBAT] You've been attacked by " .. attacker:GetName() .. ", you will be allowed to attack again after emoting.")
 	end
 end
 
@@ -211,11 +248,13 @@ function GM:CalcDamage(target, attacker, dmginfo)
 	local wep = attacker:GetActiveWeapon()
 	local holdtype = wep:GetHoldType()
 	local distance = target:GetPos():Distance(attacker:GetPos())
+	local hitgroup = target:LastHitGroup() 
 	//50% chance to hit is the default
 	local critChance = 0
 	local hitChance = 50
+	local isBackstab = math.abs(target:GetAimVector():Angle().y - attacker:GetAimVector():Angle().y) <= 30
 
-	print(dmginfo:GetDamageType())
+	print(target:WorldToLocal(dmginfo:GetDamagePosition()))
 
 	if (dmginfo:IsExplosionDamage()) then
 		//Damage is guaranteed with explosives, as they're meant to be of limited use
@@ -229,7 +268,7 @@ function GM:CalcDamage(target, attacker, dmginfo)
 				//Close range
 				critChance = 50
 				hitChance = 99
-				dmginfo:ScaleDamage(__CombatRules.CloseRange / distance)
+				dmginfo:ScaleDamage(math.max(__CombatRules.CloseRange / distance, 1.75))
 			elseif (distance >= __CombatRules.LongRange) then
 				//Long range
 				dmginfo:ScaleDamage((__CombatRules.LongRange / distance) * 2)
@@ -237,29 +276,43 @@ function GM:CalcDamage(target, attacker, dmginfo)
 			else
 				//Medium range
 				critChance = 10
-				hitChance = 75
+				hitChance = 60
 			end
 		elseif (holdtype == "ar2") then
 			//Rifles are better at longer ranges, become less effective in short range
 			hitChance = 90
 			if (distance <= __CombatRules.CloseRange) then
-				dmginfo:ScaleDamage(math.max((distance / __CombatRules.CloseRange), 0.66666))
+				hitChance = 60
+				dmginfo:ScaleDamage(math.max((distance / __CombatRules.CloseRange), 0.8))
 				//Close range
 			elseif (distance >= __CombatRules.LongRange) then
 				//Long range
-				dmginfo:ScaleDamage(math.max((distance / __CombatRules.LongRange), 2))
-				critChance = 33
+				dmginfo:ScaleDamage(math.min((distance / __CombatRules.LongRange), 2))
+				critChance = 40
+				//Guaranteed hits on a long range headshot
+				if hitgroup == HITGROUP_HEAD then
+					hitChance = 100
+				end
 			else
 				//Medium range
-				critChance = 10 
+				critChance = 25 
+			end
+			//Double crit chance if  you hit them in the head
+			if hitgroup == HITGROUP_HEAD then
+				critChance = critChance * 2
 			end
 		elseif (holdtype == "pistol") then
 			//Pistols fall off at longer ranges, but are effective in close range
 			if (distance <= __CombatRules.CloseRange) then
 				//Close range
-				critChance = 20
+				critChance = 10
 				hitChance = 90
 				dmginfo:ScaleDamage(1.25)
+				//Guaranteed hits on a close range headshot
+				if hitgroup == HITGROUP_HEAD then
+					hitChance = 100
+					critChance = 40
+				end
 			elseif (distance >= __CombatRules.LongRange) then
 				//Long range
 				hitChance = 60
@@ -280,9 +333,18 @@ function GM:CalcDamage(target, attacker, dmginfo)
 			//You could apply a bleed effect here
 			critChance = 10
 			hitChance = 90
+			if (isBackstab) then
+				critChance = 65
+				if hitgroup == HITGROUP_HEAD then
+					dmginfo:ScaleDamage(1.5)
+				end
+			end
 		elseif (dmginfo:IsDamageType(DMG_CLUB)) then
 			//This is for crowbars, stunbatons and melee weapons
 			hitChance = 80
+			if (isBackstab) then
+				critChance = 50
+			end
 		elseif (dmginfo:IsDamageType(DMG_CRUSH)) then
 			//This is for hand-to-hand and non-weapon objects
 			critChance = 15
@@ -301,14 +363,15 @@ function GM:CalcDamage(target, attacker, dmginfo)
 	if (dmginfo:GetDamage() > 0 and math.random(1, 100) < critChance ) then
 		//If the number is greater than the crit chance, then it doesn't crit
 		dmginfo:ScaleDamage(2)
-		attacker:ChatPrint("CRITICAL DAMAGE!")
+		attacker:ChatPrint("[COMBAT] CRITICAL DAMAGE!")
+		target:ChatPrint("[COMBAT] CRITICAL DAMAGE!")
 	end
 
 	dmginfo:SetDamage(math.Round(dmginfo:GetDamage()))
 
 	print("Damage has been calculated as " .. dmginfo:GetDamage())
-	attacker:ChatPrint("You deal " .. dmginfo:GetDamage() .. " damage.")
-	target:ChatPrint("You take " .. dmginfo:GetDamage() .. " damage from " .. attacker:GetName() .. ".")
+	attacker:ChatPrint("[COMBAT] You deal " .. dmginfo:GetDamage() .. " damage.")
+	target:ChatPrint("[COMBAT] You take " .. dmginfo:GetDamage() .. " damage from " .. attacker:GetName() .. ".")
 end
 
 function GM:PlayerSwitchWeapon( ply, oldWeapon, newWeapon )
@@ -323,7 +386,7 @@ function GM:EntityTakeDamage(target, dmginfo)
 	local attacker = dmginfo:GetAttacker()
 	local isPlayer = target:IsPlayer() and IsValid(attacker) and attacker:IsPlayer()
 	local validTarget = isPlayer and !target:IsDefeated() and !attacker:IsDefeated() and target != attacker
-	local canAttack = isPlayer and (!attacker:IsAttacking(target) or attacker:CanAttackAgain(target)) and attacker:IsAllowedToFire()
+	local canAttack = isPlayer and !attacker:IsAttacking(target) and attacker:IsAllowedToFire()
 
 	if (validTarget and canAttack and !dmginfo:IsDamageType(DMG_CRUSH)) then
 		gamemode.Call("CalcDamage", target, attacker, dmginfo)
@@ -331,8 +394,8 @@ function GM:EntityTakeDamage(target, dmginfo)
 		if (dmginfo:GetDamage() >= target:Health()) then
 			target:SetHealth(1)
 			target:SetDefeated(attacker, CurTime())
-			attacker:ChatPrint("You've defeated " .. target:GetName())
-			target:ChatPrint("You've been defeated by " .. attacker:GetName())
+			attacker:ChatPrint("[COMBAT] You've defeated " .. target:GetName())
+			target:ChatPrint("[COMBAT] You've been defeated by " .. attacker:GetName())
 			dmginfo:SetDamage(0)
 		else
 			gamemode.Call("OnPlayerAttack", attacker, target)

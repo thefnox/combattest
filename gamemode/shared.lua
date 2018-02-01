@@ -39,8 +39,16 @@ function GM:FinishMove(ply, mv)
 end
 
 function GM:StartCommand(ply, cmd)
-	if !ply:IsAllowedToFire() then
+	if !ply:IsAllowedToFire() or ply:IsDefeated() then
 		cmd:RemoveKey(IN_ATTACK)
 		cmd:RemoveKey(IN_ATTACK2)
+	end
+end
+
+function GM:UpdateAnimation( ply, velocity, maxseqgroundspeed )
+	BaseClass.UpdateAnimation( self, ply, velocity, maxseqgroundspeed )
+	if (ply:IsMoveLocked()) then
+		ply:SetPlaybackRate(0)
+
 	end
 end
