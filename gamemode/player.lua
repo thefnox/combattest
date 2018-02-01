@@ -25,7 +25,7 @@ if SERVER then
 
 	function ply:SetAttack(target)
 		self.__Attacking = self.__Attacking or {}
-		table.RemoveByValue(target.__Attacking or {}, self)
+		target:ClearAttack(self)
 		table.RemoveByValue(self.__Attacking, target)
 		table.insert(self.__Attacking, target)
 		net.Start( "SetAttacking" )
@@ -81,6 +81,8 @@ if SERVER then
 				target:ClearCombat()
 			end
 		end
+		self.__CanAttackAgain = {}
+		self.__MustReply = {}
 		self:ClearAttack()
 		self:ClearLockPos()
 		self:SetMoveLocked(false)
@@ -118,7 +120,7 @@ if SERVER then
 				net.WriteEntity(self)
 				net.WriteBool(true)
 			net.Broadcast()
-		else
+		elseif (killer) then
 			self:ClearCombat()
 			for _, pl in pairs(player.GetAll()) do
 				pl:ClearAttack(self)

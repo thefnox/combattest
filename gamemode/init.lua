@@ -31,6 +31,12 @@ GM.__ChatCommands = {
 	end,
 	["/unlockme"] = function(ply)
 		ply:ClearLockPos()
+		ply:SetMoveLocked(false)
+		return false
+	end,
+	["/reviveme"] = function(ply)
+		ply:SetDefeated(false)
+		ply:SetHealth(100)
 		return false
 	end,
 	["/fireblock"] = function(ply)
@@ -68,6 +74,13 @@ GM.__ChatCommands = {
 	end,
 	["/botrevive"] = function(ply)
 		for _, pl in pairs(player.GetBots()) do
+			pl:SetDefeated(false)
+			pl:SetHealth(100)
+		end
+		return false
+	end,
+	["/reviveall"] = function(ply)
+		for _, pl in pairs(player.GetAll()) do
 			pl:SetDefeated(false)
 			pl:SetHealth(100)
 		end
@@ -129,6 +142,7 @@ function GM:PlayerEmote(ply, emote)
 		end
 		if (ply:IsDefending()) then
 			ply:SetAllowedToFire(!ply:IsAttacking())
+			ply:SetMoveLocked(ply:IsAttacking())
 		end
 		if (ply:IsAttacking()) then
 			if (ply.__MustReply and #ply.__MustReply == 0) then
@@ -149,7 +163,7 @@ function GM:PlayerEmote(ply, emote)
 					end
 				end
 			end
- 		end
+		end
 	elseif (ply:IsInCombat()) then
 		ply:ChatPrint("The emote wasn't long enough according to combat rules, try again.")
 	end
@@ -168,6 +182,7 @@ function GM:OnPlayerAttack(ply, target)
 	ply:SetMoveLocked(true)
 	ply:ClearAttackAgain(target)
 	ply.__MustReply = ply.__MustReply or {}
+	table.RemoveByValue(ply.__MustReply, target)
 	table.insert(ply.__MustReply, target)
 	if !timer.Exists(ply:SteamID() .. "AttackTimer") then
 		timer.Create( ply:SteamID() .. "AttackTimer", __CombatRules.ShootTime, 1, function()
@@ -183,6 +198,7 @@ end
 function GM:OnPlayerDefend(ply, attacker)
 	print(ply:GetName() .. " is being attacked by" .. attacker:GetName())
 	ply:SetLockPos(ply:GetPos())
+	ply:SetMoveLocked(ply:IsAttacking() and (ply.__MustReply and #ply.__MustReply > 0))
 	ply:SetAllowedToFire(false)
 	if (!ply:IsInCombat()) then
 		ply:ChatPrint("You've been attacked by " .. attacker:GetName() .. ", you will be allowed to attack again after emoting.")
@@ -292,6 +308,7 @@ function GM:CalcDamage(target, attacker, dmginfo)
 
 	print("Damage has been calculated as " .. dmginfo:GetDamage())
 	attacker:ChatPrint("You deal " .. dmginfo:GetDamage() .. " damage.")
+	target:ChatPrint("You take " .. dmginfo:GetDamage() .. " damage from " .. attacker:GetName() .. ".")
 end
 
 function GM:PlayerSwitchWeapon( ply, oldWeapon, newWeapon )

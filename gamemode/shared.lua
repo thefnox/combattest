@@ -6,7 +6,7 @@ GM.Email 	= "thefnox@gmail.com"
 GM.Website  = ""
 
 __CombatRules = {
-	BaseMoveDistance = 500,
+	BaseMoveDistance = 300,
 	CloseRange = 400,
 	LongRange = 1000,
 	ShootTime = 1,
